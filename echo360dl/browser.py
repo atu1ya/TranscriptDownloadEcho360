@@ -21,6 +21,12 @@ PLAYWRIGHT_HINT = (
     "instead, or run the app from source."
 )
 
+NO_BROWSER_HINT = (
+    "Browser login could not start a browser.\n\n"
+    "Install Google Chrome or Microsoft Edge, which the app will use "
+    "automatically, or use 'Paste cookies' instead."
+)
+
 
 def playwright_available() -> bool:
     try:
@@ -58,33 +64,56 @@ def login(
     deadline = time.monotonic() + timeout
 
     with sync_playwright() as playwright:
-        def start():
+        def start(channel: str | None):
+            """Open a window, either with Playwright's Chromium or ``channel``."""
+            options: dict[str, object] = {"headless": False}
+            if channel:
+                options["channel"] = channel
             if persist:
                 context = playwright.chromium.launch_persistent_context(
-                    session_store.BROWSER_PROFILE, headless=False,
-                    args=["--no-first-run"],
+                    session_store.BROWSER_PROFILE, args=["--no-first-run"],
+                    **options,
                 )
                 return context, (context.pages[0] if context.pages
                                  else context.new_page())
-            browser = playwright.chromium.launch(headless=False)
+            browser = playwright.chromium.launch(**options)
             context = browser.new_context()
             return context, context.new_page()
 
-        try:
-            context, page = start()
-        except PlaywrightError as exc:
-            # The usual cause is a playwright package whose Chromium was
-            # never downloaded; fetch it once and try again.
-            if "executable doesn" not in str(exc).lower():
-                raise Echo360Error(f"could not start Chromium ({exc})") from exc
-            say("Chromium is missing -- downloading it now (one time only).")
+        def open_browser():
+            # Prefer a browser that is already here, so most people never
+            # wait on a download.
+            attempts: list[str | None] = []
+            if bootstrap.browser_installed():
+                attempts.append(None)
+            channel = bootstrap.system_browser()
+            if channel:
+                attempts.append(channel)
+
+            last: PlaywrightError | None = None
+            for candidate in attempts:
+                try:
+                    return start(candidate)
+                except PlaywrightError as exc:
+                    last = exc
+                    say(f"{candidate or 'Chromium'} would not start -- "
+                        "trying another browser.")
+
+            # Nothing usable on this computer: fetch our own Chromium, which
+            # a frozen build cannot do.
+            if bootstrap.is_frozen():
+                raise Echo360Error(bootstrap.frozen_text())
+            say("No usable browser found -- downloading Chromium "
+                "(one time only).")
             bootstrap.install_browser(say)
             try:
-                context, page = start()
-            except PlaywrightError as retry_exc:
+                return start(None)
+            except PlaywrightError as exc:
                 raise Echo360Error(
-                    f"could not start Chromium ({retry_exc}).\n\n{PLAYWRIGHT_HINT}"
-                ) from retry_exc
+                    f"{NO_BROWSER_HINT}\n\nDetails: {last or exc}"
+                ) from exc
+
+        context, page = open_browser()
 
         try:
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)

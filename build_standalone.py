@@ -33,6 +33,14 @@ def write_entry_point() -> None:
     )
 
 
+def _playwright_installed() -> bool:
+    try:
+        import playwright  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def main() -> int:
     if shutil.which("pyinstaller") is None:
         print("PyInstaller is not installed. Run:  pip install pyinstaller")
@@ -50,6 +58,12 @@ def main() -> int:
         "--collect-submodules", "echo360dl",
         str(ENTRY),
     ]
+    if _playwright_installed():
+        # Bundling Playwright (package plus its node driver) is what lets the
+        # frozen build log in through the browser at all: it cannot pip
+        # install anything later. It drives whatever Chrome or Edge the
+        # machine already has.
+        command[-1:-1] = ["--collect-all", "playwright"]
     if sys.platform == "darwin":
         command += ["--osx-bundle-identifier", "au.edu.uwa.echo360dl"]
 

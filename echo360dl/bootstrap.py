@@ -1,17 +1,23 @@
-"""One-time, self-service installation of the browser-login dependency.
+"""One-time, self-service setup of the browser-login dependency.
 
-Browser login needs two things: the ``playwright`` Python package and the
-Chromium build it drives. Rather than asking the user to open a terminal,
-the app installs both into its own interpreter on demand.
+Browser login needs two things: the ``playwright`` Python package and a
+Chromium-family browser for it to drive. Rather than asking the user to
+open a terminal, the app sorts both out itself:
 
-This works when the app runs from source (including the virtualenv the
-launchers create). It cannot work inside a PyInstaller build, which has no
-pip and no writable site-packages -- see ``describe()``.
+* the package is pip-installed into the app's own interpreter on demand;
+* the browser is usually one the computer already has -- Playwright can
+  drive an installed Chrome or Edge, so most people download nothing at
+  all. Only when neither is present does it fetch its own Chromium.
+
+The package install works when the app runs from source (including the
+virtualenv the launchers create). It cannot work inside a PyInstaller
+build, which has no pip and no writable site-packages -- see ``describe()``.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from typing import Callable
@@ -53,11 +59,72 @@ def browser_installed() -> bool:
         return False
 
 
+# Chrome and Edge install in predictable places, and Playwright can drive
+# either as a "channel". Checking the disk beats launching one to find out.
+_WINDOWS_BROWSERS = (
+    ("chrome", r"Google\Chrome\Application\chrome.exe"),
+    ("msedge", r"Microsoft\Edge\Application\msedge.exe"),
+)
+_MACOS_BROWSERS = (
+    ("chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    ("msedge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+)
+_LINUX_BROWSERS = (
+    ("chrome", ("google-chrome", "google-chrome-stable")),
+    ("msedge", ("microsoft-edge", "microsoft-edge-stable")),
+)
+
+
+def system_browser() -> str | None:
+    """The Playwright channel for a Chrome/Edge already installed here.
+
+    ``None`` when the computer has neither, in which case browser login
+    falls back to Playwright's own Chromium download.
+    """
+    if sys.platform == "win32":
+        roots = [os.environ.get(name) for name in
+                 ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)",
+                  "LOCALAPPDATA")]
+        for channel, relative in _WINDOWS_BROWSERS:
+            for root in roots:
+                if root and os.path.exists(os.path.join(root, relative)):
+                    return channel
+        return None
+    if sys.platform == "darwin":
+        for channel, path in _MACOS_BROWSERS:
+            if os.path.exists(path):
+                return channel
+        return None
+    for channel, commands in _LINUX_BROWSERS:
+        if any(shutil.which(command) for command in commands):
+            return channel
+    return None
+
+
 def describe() -> str:
     """What, if anything, still needs installing."""
     if package_installed():
-        return READY if browser_installed() else MISSING_BROWSER
+        if browser_installed() or system_browser():
+            return READY
+        return FROZEN if is_frozen() else MISSING_BROWSER
     return FROZEN if is_frozen() else MISSING_PACKAGE
+
+
+def frozen_text() -> str:
+    """Why browser login is unavailable in a standalone build, and the way out."""
+    if package_installed():
+        # Playwright is bundled; it just has no browser to drive.
+        return (
+            "Browser login needs Google Chrome or Microsoft Edge, and this "
+            "computer has neither.\n\n"
+            "Install either one and try again, or use 'Paste cookies', "
+            "which needs nothing extra."
+        )
+    return (
+        "This standalone build cannot set up browser login.\n\n"
+        "Use 'Paste cookies' instead -- the dialog walks you through it -- "
+        "or run the app from source for the one-click login."
+    )
 
 
 def prompt_text(state: str) -> str:
@@ -68,7 +135,9 @@ def prompt_text(state: str) -> str:
             f"been downloaded yet ({DOWNLOAD_SIZE_HINT}).\n\n"
             "Download it now? It is a one-time setup -- after this, logging "
             "in is a single click.\n\n"
-            "You can skip this and use 'Paste cookies' instead."
+            "Alternatives: install Google Chrome or Microsoft Edge, which "
+            "the app will drive instead with no download at all, or use "
+            "'Paste cookies'."
         )
     return (
         "Browser login is the easy way to sign in: a browser window opens, "
@@ -177,11 +246,7 @@ def ensure(on_status: StatusFn | None = None) -> None:
     if state == READY:
         return
     if state == FROZEN:
-        raise Echo360Error(
-            "this standalone build cannot set up browser login. Use 'Paste "
-            "cookies' instead, or run the app from source to get the "
-            "one-click login."
-        )
+        raise Echo360Error(frozen_text())
     if state == MISSING_PACKAGE:
         install_package(on_status)
         if not package_installed():

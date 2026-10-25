@@ -690,14 +690,23 @@ class Echo360Client:
         return lessons
 
     def transcript_urls(self, lesson: Lesson) -> list[str]:
-        """Candidate transcript URLs, most specific first."""
+        """Candidate transcript URLs, most specific first.
+
+        ``format=text`` is what the Echo360 player itself requests; vtt is
+        tried first only because it carries timings, which text does not.
+        """
         urls: list[str] = []
         for media_id in lesson.media_ids:
             base = f"/api/ui/echoplayer/lessons/{lesson.lesson_id}/medias/{media_id}"
-            urls.append(f"{base}/transcript")
             urls.append(f"{base}/transcript-file?format=vtt")
-        urls.append(f"/api/ui/echoplayer/lessons/{lesson.lesson_id}/transcript")
+            urls.append(f"{base}/transcript-file?format=text")
+            urls.append(f"{base}/transcript")
+        player = f"/api/ui/echoplayer/lessons/{lesson.lesson_id}"
+        urls.append(f"{player}/transcript-file?format=vtt")
+        urls.append(f"{player}/transcript-file?format=text")
+        urls.append(f"{player}/transcript")
         urls.append(f"/lesson/{lesson.lesson_id}/transcript-file?format=vtt")
+        urls.append(f"/lesson/{lesson.lesson_id}/transcript-file?format=text")
         urls.append(f"/lesson/{lesson.lesson_id}/transcript")
         return urls
 

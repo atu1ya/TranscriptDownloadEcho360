@@ -22,7 +22,7 @@ except ImportError as exc:  # pragma: no cover - platform dependent
         f"({exc})"
     )
 
-from . import browser, session as session_store
+from . import bootstrap, browser, session as session_store
 from .core import (
     DEFAULT_HOST,
     AuthError,
@@ -241,6 +241,14 @@ class App(ttk.Frame):
         elif kind == "error":
             self.log(f"ERROR: {payload}")
             messagebox.showerror("Echo360 Transcript Downloader", str(payload))
+        elif kind == "fallback":
+            self.status_var.set("Browser login unavailable -- use pasted cookies.")
+            messagebox.showwarning(
+                "Browser login could not be set up",
+                f"{payload}\n\nNo problem -- you can log in by pasting "
+                "cookies instead. That window will open now.",
+            )
+            self.on_paste_cookies()
         elif kind == "idle":
             self._set_busy(False)
 
@@ -303,14 +311,36 @@ class App(ttk.Frame):
             self.log(f"Could not save the session: {exc}")
 
     def on_browser_login(self) -> None:
-        if not browser.playwright_available():
-            messagebox.showinfo("Browser login", browser.PLAYWRIGHT_HINT)
+        state = bootstrap.describe()
+        if state == bootstrap.FROZEN:
+            messagebox.showinfo(
+                "Browser login",
+                "This standalone build cannot install browser login.\n\n"
+                "Use \"Paste cookies\" instead -- the dialog walks you "
+                "through it -- or run the app from source for one-click "
+                "login.",
+            )
             return
+        if state != bootstrap.READY:
+            if not messagebox.askyesno("One-time setup",
+                                       bootstrap.prompt_text(state)):
+                return
+
         start = self.section_var.get().strip() or self.host_var.get().strip() or DEFAULT_HOST
         if "://" not in start:
             start = "https://" + start
 
         def work() -> None:
+            if state != bootstrap.READY:
+                self._post("status", "Setting up browser login (one time only)…")
+                try:
+                    bootstrap.ensure(lambda msg: self._post("log", msg))
+                except Echo360Error as exc:
+                    # Never dead-end: offer the login route that always works.
+                    self._post("log", f"Setup did not finish: {exc}")
+                    self._post("fallback", str(exc))
+                    return
+                self._post("log", "Browser login is ready.")
             cookies = browser.login(start, on_status=lambda msg: self._post("log", msg))
             self._post("session", cookies)
 

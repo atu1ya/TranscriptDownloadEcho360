@@ -11,13 +11,14 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+from . import bootstrap
 from .core import AUTH_COOKIE, Echo360Error
 
 PLAYWRIGHT_HINT = (
-    "Browser login needs Playwright:\n\n"
-    "    pip install playwright\n"
-    "    python -m playwright install chromium\n\n"
-    "Or use Session -> Paste cookies instead."
+    "Browser login needs Playwright, which the app can install for you.\n\n"
+    "Click 'Log in with browser' and say yes when it offers to set it up.\n\n"
+    "In a standalone build that is not possible -- use 'Paste cookies' "
+    "instead, or run the app from source."
 )
 
 
@@ -57,21 +58,33 @@ def login(
     deadline = time.monotonic() + timeout
 
     with sync_playwright() as playwright:
-        try:
+        def start():
             if persist:
                 context = playwright.chromium.launch_persistent_context(
                     session_store.BROWSER_PROFILE, headless=False,
                     args=["--no-first-run"],
                 )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = playwright.chromium.launch(headless=False)
-                context = browser.new_context()
-                page = context.new_page()
+                return context, (context.pages[0] if context.pages
+                                 else context.new_page())
+            browser = playwright.chromium.launch(headless=False)
+            context = browser.new_context()
+            return context, context.new_page()
+
+        try:
+            context, page = start()
         except PlaywrightError as exc:
-            raise Echo360Error(
-                f"could not start Chromium ({exc}).\n\n{PLAYWRIGHT_HINT}"
-            ) from exc
+            # The usual cause is a playwright package whose Chromium was
+            # never downloaded; fetch it once and try again.
+            if "executable doesn" not in str(exc).lower():
+                raise Echo360Error(f"could not start Chromium ({exc})") from exc
+            say("Chromium is missing -- downloading it now (one time only).")
+            bootstrap.install_browser(say)
+            try:
+                context, page = start()
+            except PlaywrightError as retry_exc:
+                raise Echo360Error(
+                    f"could not start Chromium ({retry_exc}).\n\n{PLAYWRIGHT_HINT}"
+                ) from retry_exc
 
         try:
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)

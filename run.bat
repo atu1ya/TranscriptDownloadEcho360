@@ -8,17 +8,21 @@ cd /d "%~dp0"
 title Echo360 Transcript Downloader
 
 REM --- find a usable Python ------------------------------------------
+REM Require BOTH a new enough version AND a working Tkinter: some Pythons
+REM on PATH (MSYS2, minimal builds) have no Tkinter, and the app would then
+REM die invisibly because pythonw has no console to print the error to.
 set PY=
 for %%C in (py python python3) do (
   if not defined PY (
-    %%C -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+    %%C -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
     if not errorlevel 1 set PY=%%C
   )
 )
 
 if not defined PY (
   echo.
-  echo   Python 3.10 or newer was not found on this computer.
+  echo   No suitable Python was found on this computer.
+  echo   (It must be version 3.10 or newer, and include Tkinter.)
   echo.
   echo   This app needs it. Installing takes about two minutes:
   echo.

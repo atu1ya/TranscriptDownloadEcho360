@@ -190,6 +190,58 @@ def _stamp(ms: int | None, decimal: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}{decimal}{millis:03d}"
 
 
+_IDENTITY_CLAIMS = ("email", "userName", "username", "preferred_username",
+                    "userId", "user_id", "personId", "sub", "name")
+
+
+def decode_jwt(token: str) -> dict:
+    """Read a JWT's payload claims. Diagnostics only -- no signature check."""
+    parts = (token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        import base64
+
+        return json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", "replace"))
+    except Exception:
+        return {}
+
+
+def describe_jwt(token: str) -> str:
+    """One line on whether an ``ECHO_JWT`` is usable, and who it belongs to.
+
+    Echo360 hands out a token before you sign in, so the cookie being
+    present says nothing: this reads the token to tell an anonymous or
+    expired one from a real login.
+    """
+    claims = decode_jwt(token)
+    if not claims:
+        return ("the ECHO_JWT is not a readable token -- it was probably "
+                "truncated when copied")
+
+    notes: list[str] = []
+    expiry = claims.get("exp")
+    if isinstance(expiry, (int, float)):
+        when = datetime.fromtimestamp(expiry, tz=timezone.utc)
+        minutes = (when - datetime.now(timezone.utc)).total_seconds() / 60
+        if minutes <= 0:
+            notes.append(f"it expired {abs(minutes):.0f} minute(s) ago "
+                         f"({when:%Y-%m-%d %H:%M UTC})")
+        else:
+            notes.append(f"it is valid for another {minutes:.0f} minute(s)")
+
+    identity = next((str(claims[key]) for key in _IDENTITY_CLAIMS
+                     if claims.get(key) not in (None, "", "anonymous")), "")
+    if identity:
+        notes.append(f"it belongs to {identity}")
+    else:
+        notes.append("it carries no user -- this is the anonymous token "
+                     "Echo360 issues before you sign in, so the cookies were "
+                     "copied from a page where you were not logged in")
+    return "; ".join(notes)
+
+
 def parse_cookie_header(blob: str) -> dict[str, str]:
     """Parse a pasted `document.cookie` / Cookie: header string."""
     jar: dict[str, str] = {}
@@ -567,6 +619,12 @@ class Echo360Client:
         lines = [
             "Echo360 rejected the session "
             f"(HTTP {response.status_code} from {url}).",
+        ]
+        token = self.cookies.get(AUTH_COOKIE)
+        if token:
+            lines += ["", f"About the {AUTH_COOKIE} that was sent: "
+                          f"{describe_jwt(token)}."]
+        lines += [
             "",
             "The usual causes, in order:",
             "  * The cookies are for a different Echo360 host. This unit "

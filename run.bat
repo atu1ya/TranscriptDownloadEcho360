@@ -79,8 +79,25 @@ if errorlevel 1 goto venv_failed
 if errorlevel 1 goto install_failed
 echo Setup finished.
 
-REM --- launch (pythonw = no console window) --------------------------
+REM --- launch --------------------------------------------------------
 :launch
+REM pythonw has no console, so a startup error would vanish with the
+REM window and look like "nothing happens". Check the app imports first,
+REM and if it does not, show why and keep the window open.
+.venv\Scripts\python -c "import echo360dl.gui" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo   The app could not start. The reason follows:
+  echo.
+  .venv\Scripts\python -c "import echo360dl.gui"
+  echo.
+  echo   If that mentions "requests", run:
+  echo       .venv\Scripts\python -m pip install requests
+  echo.
+  pause
+  exit /b 1
+)
+
 if exist ".venv\Scripts\pythonw.exe" (
   if "%~1"=="" (
     start "" ".venv\Scripts\pythonw.exe" -m echo360dl
@@ -88,6 +105,7 @@ if exist ".venv\Scripts\pythonw.exe" (
   )
 )
 .venv\Scripts\python -m echo360dl %*
+if errorlevel 1 pause
 exit /b %errorlevel%
 
 REM --- look for python.exe in the Python3xx folders under a directory -

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -400,6 +401,27 @@ def parse_syllabus(payload: Any) -> list[Lesson]:
         lessons.append(Lesson(lesson_id=lesson_id, title=title,
                               media_ids=media_ids, starts_at=starts_at))
 
+    if not lessons:
+        # Some tenants do not wrap lessons in a "lesson" key at all. Take
+        # anything carrying an id, a title and a time -- all three, so this
+        # does not sweep up unrelated objects.
+        for node in _iter_dicts(payload):
+            node_id = node.get("id")
+            if not _looks_like_id(node_id) or node_id in seen:
+                continue
+            title = next((node[key].strip() for key in
+                          ("displayName", "name", "title", "lessonName")
+                          if isinstance(node.get(key), str) and node[key].strip()), "")
+            starts_at = next((parsed for parsed in
+                              (_parse_time(node.get(key)) for key in _TIME_KEYS)
+                              if parsed), None)
+            if not title or not starts_at:
+                continue
+            seen.add(node_id)
+            lessons.append(Lesson(lesson_id=node_id, title=title,
+                                  media_ids=_collect_media_ids(node),
+                                  starts_at=starts_at))
+
     lessons.sort(key=lambda item: (item.starts_at is None,
                                    item.starts_at or datetime.min.replace(tzinfo=timezone.utc)))
     for position, lesson in enumerate(lessons, start=1):
@@ -683,10 +705,7 @@ class Echo360Client:
             ) from exc
         lessons = parse_syllabus(payload)
         if not lessons:
-            raise Echo360Error(
-                "no lessons found in the syllabus response (is this the right "
-                "section, and can you see classes in the browser?)"
-            )
+            raise Echo360Error(_no_lessons_help(response, payload))
         return lessons
 
     def transcript_urls(self, lesson: Lesson) -> list[str]:
@@ -735,6 +754,58 @@ class Echo360Client:
         raise NoTranscriptError(
             "no transcript available for this lesson (" + "; ".join(problems) + ")"
         )
+
+
+def describe_shape(payload: Any, depth: int = 5, limit: int = 8) -> str:
+    """A one-line sketch of a JSON document, for when parsing finds nothing."""
+    if isinstance(payload, dict):
+        if depth <= 0:
+            return f"{{{len(payload)} keys}}"
+        inner = ", ".join(
+            f"{key}: {describe_shape(value, depth - 1, limit)}"
+            for key, value in list(payload.items())[:limit]
+        )
+        extra = ", ..." if len(payload) > limit else ""
+        return "{" + inner + extra + "}"
+    if isinstance(payload, list):
+        if not payload:
+            return "[]"
+        return f"[{len(payload)} x {describe_shape(payload[0], depth - 1, limit)}]"
+    if isinstance(payload, str):
+        return "str"
+    return type(payload).__name__
+
+
+def _no_lessons_help(response: requests.Response, payload: Any) -> str:
+    """Explain an unrecognised syllabus, and keep the evidence."""
+    from . import session as session_store
+
+    dump = ""
+    try:
+        os.makedirs(session_store.APP_DIR, exist_ok=True)
+        dump = os.path.join(session_store.APP_DIR, "syllabus-dump.json")
+        with open(dump, "w", encoding="utf-8") as handle:
+            handle.write(response.text)
+    except OSError:
+        dump = ""
+
+    lines = [
+        "The syllabus loaded, but no lessons were recognised in it.",
+        "",
+        f"What came back: {describe_shape(payload)}",
+    ]
+    if isinstance(payload, dict) and payload.get("data") == []:
+        lines += [
+            "",
+            "That 'data' list is empty, so Echo360 returned a syllabus with "
+            "no classes in it. The section UUID is probably not the one this "
+            "unit uses -- open the unit in Echo360 and copy the address of "
+            "its home page again.",
+        ]
+    if dump:
+        lines += ["", f"The full response was saved to {dump} -- send that "
+                      "file and the parser can be taught this shape."]
+    return "\n".join(lines)
 
 
 def _is_login_page(response: requests.Response) -> bool:

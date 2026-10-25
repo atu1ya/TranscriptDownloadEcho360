@@ -1,0 +1,4 @@
+requests>=2.28
+# Optional: only needed for the "Log in with browser" button.
+# After installing, also run: python -m playwright install chromium
+playwright>=1.40

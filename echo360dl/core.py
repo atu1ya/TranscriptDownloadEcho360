@@ -318,6 +318,19 @@ def _looks_like_id(value: Any) -> bool:
     return isinstance(value, str) and bool(_UUID_RE.match(value.strip()))
 
 
+def _looks_like_lesson_id(value: Any) -> bool:
+    """True for a lesson id, which is not always a UUID.
+
+    A lesson created from a scheduled capture carries a composite id --
+    ``G_<capture>_<section>_<start>_<end>`` -- so requiring a bare UUID
+    here loses every timetabled lecture.
+    """
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    return len(value) >= 8 and not re.search(r"\s", value)
+
+
 def _parse_time(value: Any) -> datetime | None:
     if isinstance(value, (int, float)) and value > 0:
         seconds = value / 1000 if value > 1e11 else value
@@ -373,7 +386,7 @@ def parse_syllabus(payload: Any) -> list[Lesson]:
         inner = wrapper.get("lesson")
         core = inner if isinstance(inner, dict) else wrapper
         lesson_id = core.get("id") or wrapper.get("id")
-        if not _looks_like_id(lesson_id) or lesson_id in seen:
+        if not _looks_like_lesson_id(lesson_id) or lesson_id in seen:
             continue
         seen.add(lesson_id)
 
@@ -407,7 +420,7 @@ def parse_syllabus(payload: Any) -> list[Lesson]:
         # does not sweep up unrelated objects.
         for node in _iter_dicts(payload):
             node_id = node.get("id")
-            if not _looks_like_id(node_id) or node_id in seen:
+            if not _looks_like_lesson_id(node_id) or node_id in seen:
                 continue
             title = next((node[key].strip() for key in
                           ("displayName", "name", "title", "lessonName")

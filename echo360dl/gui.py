@@ -22,7 +22,7 @@ except ImportError as exc:  # pragma: no cover - platform dependent
         f"({exc})"
     )
 
-from . import bootstrap, browser, session as session_store
+from . import __version__, bootstrap, browser, session as session_store
 from .core import (
     DEFAULT_HOST,
     AuthError,
@@ -30,6 +30,7 @@ from .core import (
     Echo360Client,
     Echo360Error,
     Lesson,
+    SESSION_COOKIE,
     describe_jwt,
     parse_cookie_header,
     split_section_url,
@@ -72,6 +73,7 @@ class App(ttk.Frame):
         }
 
         self._build()
+        self._announce_build()
         self._restore_session()
         self.after(100, self._drain_events)
 
@@ -290,6 +292,29 @@ class App(ttk.Frame):
         threading.Thread(target=wrapper, daemon=True).start()
 
     # -------------------------------------------------------------- session
+    def _announce_build(self) -> None:
+        """Log which copy of the app this is, and where it is running from.
+
+        Several copies tend to accumulate on one machine, and an old one
+        failing in a way that was already fixed is hard to spot otherwise.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        build = ""
+        head = os.path.join(root, ".git", "HEAD")
+        try:
+            with open(head, encoding="utf-8") as handle:
+                ref = handle.read().strip()
+            if ref.startswith("ref: "):
+                with open(os.path.join(root, ".git", ref[5:]),
+                          encoding="utf-8") as handle:
+                    build = handle.read().strip()[:7]
+            else:
+                build = ref[:7]
+        except OSError:
+            build = "no git info"
+        self.log(f"Echo360 Transcript Downloader {__version__} ({build})")
+        self.log(f"Running from {root}")
+
     def _restore_session(self) -> None:
         cookies, host, saved_at = session_store.load()
         if cookies:
@@ -310,6 +335,17 @@ class App(ttk.Frame):
                 "requests. Copy the cookies again while logged in to Echo360.",
             )
             return
+        if SESSION_COOKIE not in cookies:
+            if not messagebox.askyesno(
+                "A cookie is missing",
+                f"{SESSION_COOKIE} is not in what was pasted, and Echo360 "
+                f"needs it -- {AUTH_COOKIE} on its own is not a login.\n\n"
+                "It is HttpOnly, so the console cannot show it. Copy the "
+                "Cookie: request header from the Network tab instead; that "
+                "one carries every cookie.\n\n"
+                "Use these anyway?",
+            ):
+                return
         verdict = describe_jwt(cookies[AUTH_COOKIE])
         if "expired" in verdict or "anonymous" in verdict or "truncated" in verdict:
             # Say so now rather than after the first failed fetch.
@@ -377,24 +413,27 @@ class App(ttk.Frame):
             text=(
                 "This copies the login you already have in your browser.\n"
                 "Nothing is typed here except what your browser prints.\n\n"
-                "Quick way:\n"
-                "1.  Click the button below to open Echo360, and sign in.\n"
-                "2.  Press F12 (macOS: Option+Command+I) to open DevTools.\n"
-                "3.  Click the \"Console\" tab.\n"
-                "4.  Click \"Copy the command\" below, paste it into the\n"
-                "     console and press Enter. If the browser refuses to\n"
-                "     paste, type  allow pasting  first, press Enter, then\n"
-                "     paste again.\n"
-                "5.  Copy the whole line it prints out (without the quote\n"
-                "     marks is fine too) and paste it into the box below.\n\n"
-                "If Echo360 still says the session was rejected, the console\n"
-                "did not show every cookie (some are HttpOnly). Complete way:\n"
-                "1.  In DevTools, open the \"Network\" tab and reload the page.\n"
-                "2.  Click the first request in the list (the page itself).\n"
-                "3.  Under \"Request Headers\", right-click the \"Cookie\" row\n"
-                "     and copy its value -- that one holds all of them.\n\n"
-                "Either way, copy the cookies from the same Echo360 address\n"
-                "as the unit you are downloading."
+                f"Echo360 needs {AUTH_COOKIE} and {SESSION_COOKIE}, and both\n"
+                "are HttpOnly -- the console cannot see them. Two ways that\n"
+                "do work. First, click the button below to open Echo360,\n"
+                "sign in, open the unit, then press F12 (macOS:\n"
+                "Option+Command+I) for DevTools.\n\n"
+                "A.  Network tab -- one copy, all cookies:\n"
+                "     1. Click \"Network\", then reload the page.\n"
+                "     2. Click the first request in the list (the page).\n"
+                "     3. Under \"Request Headers\", right-click the\n"
+                "         \"Cookie\" row and choose Copy value.\n\n"
+                "B.  Application tab -- if the Network tab is a jungle:\n"
+                f"     1. Click \"Application\" (Edge: \"Application\"),\n"
+                "         then Cookies in the left sidebar, then the\n"
+                "         echo360 address under it.\n"
+                f"     2. Double-click the Value cell of {AUTH_COOKIE},\n"
+                "         select it all and copy.\n"
+                f"     3. Paste it below, then do the same for\n"
+                f"         {SESSION_COOKIE} on a new line.\n"
+                "         Name and value, one pair per line, is fine.\n\n"
+                "Copy the cookies from the same Echo360 address as the unit\n"
+                "you are downloading."
             ),
         ).grid(row=0, column=0, sticky="w")
 
@@ -416,8 +455,10 @@ class App(ttk.Frame):
         box = scrolledtext.ScrolledText(window, width=78, height=7, wrap="word")
         box.grid(row=1, column=0, padx=12, sticky="ew")
         box.focus_set()
-        hint = ttk.Label(window, text=f"The line must contain {AUTH_COOKIE}=…",
-                         foreground="#666")
+        hint = ttk.Label(
+            window,
+            text=f"The line must contain {AUTH_COOKIE}=… and {SESSION_COOKIE}=…",
+            foreground="#666")
         hint.grid(row=2, column=0, sticky="w", padx=12, pady=(4, 0))
 
         def accept() -> None:

@@ -23,6 +23,11 @@ log = logging.getLogger(__name__)
 
 DEFAULT_HOST = "https://echo360.net.au"
 AUTH_COOKIE = "ECHO_JWT"
+# Echo360 runs on the Play Framework, and the JWT alone does not get you in:
+# the server-side session rides in PLAY_SESSION. It is HttpOnly (as is
+# ECHO_JWT on most tenants), so document.cookie cannot see it -- it has to
+# come from the Cookie: request header or the Application tab.
+SESSION_COOKIE = "PLAY_SESSION"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -242,17 +247,32 @@ def describe_jwt(token: str) -> str:
     return "; ".join(notes)
 
 
+_COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
 def parse_cookie_header(blob: str) -> dict[str, str]:
-    """Parse a pasted `document.cookie` / Cookie: header string."""
+    """Parse pasted cookies, however the browser handed them over.
+
+    Accepts a ``Cookie:`` request header or ``document.cookie`` output
+    (``name=value; name=value``) and DevTools' Application tab, whose rows
+    copy as ``name<TAB>value``.
+    """
     jar: dict[str, str] = {}
     blob = blob.strip()
     if blob.lower().startswith("cookie:"):
         blob = blob.split(":", 1)[1]
     for chunk in re.split(r"[;\n]", blob):
         chunk = chunk.strip()
-        if not chunk or "=" not in chunk:
+        if not chunk:
             continue
-        name, _, value = chunk.partition("=")
+        name, separator, value = chunk.partition("=")
+        if not (separator and _COOKIE_NAME_RE.match(name.strip())):
+            # Not "name=value", so try the table form. Values are base64-ish
+            # and never contain whitespace, which makes this unambiguous.
+            parts = chunk.split(None, 1)
+            if len(parts) != 2 or not _COOKIE_NAME_RE.match(parts[0]):
+                continue
+            name, value = parts
         name, value = name.strip(), value.strip().strip('"')
         if name:
             jar[name] = value
@@ -624,23 +644,25 @@ class Echo360Client:
         if token:
             lines += ["", f"About the {AUTH_COOKIE} that was sent: "
                           f"{describe_jwt(token)}."]
-        lines += [
-            "",
-            "The usual causes, in order:",
-            "  * The cookies are for a different Echo360 host. This unit "
-            f"lives on {self.host} -- copy the cookies from that address.",
-            "  * The login has expired -- Echo360's cookie is short-lived. "
-            "Reload Echo360 in the browser and copy the cookies again.",
-            f"  * Only part of the cookie line was copied. {AUTH_COOKIE} "
-            "values are long; make sure nothing was cut off.",
-        ]
-        if len(sent) <= 1:
-            lines.append(
-                "  * Only one cookie came through. Some Echo360 cookies are "
-                "HttpOnly, so document.cookie cannot see them -- use the "
-                "'Copy from the Network tab' route in the paste dialog, "
-                "which captures every cookie."
+
+        causes: list[str] = []
+        if SESSION_COOKIE not in self.cookies:
+            causes.append(
+                f"{SESSION_COOKIE} was not sent, and Echo360 needs it -- the "
+                "JWT on its own is not a login. It is HttpOnly, so "
+                "document.cookie cannot see it: copy the Cookie: request "
+                "header from the Network tab, which carries every cookie."
             )
+        causes += [
+            "The cookies are for a different Echo360 host. This unit lives "
+            f"on {self.host} -- copy the cookies from that address.",
+            "The browser was not actually signed in when the cookies were "
+            "copied, so Echo360 handed it an anonymous token.",
+            f"Only part of the cookie line was copied. {AUTH_COOKIE} and "
+            f"{SESSION_COOKIE} values are long; check nothing was cut off.",
+        ]
+        lines += ["", "The usual causes, in order:"]
+        lines += [f"  * {cause}" for cause in causes]
         lines += ["", f"Cookies sent: {', '.join(sent) or 'none'}"]
         if response.url != url:
             lines.append(f"Ended up at: {response.url}")

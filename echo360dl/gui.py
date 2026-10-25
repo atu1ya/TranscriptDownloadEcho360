@@ -30,6 +30,7 @@ from .core import (
     Echo360Client,
     Echo360Error,
     Lesson,
+    describe_jwt,
     parse_cookie_header,
     split_section_url,
 )
@@ -309,6 +310,17 @@ class App(ttk.Frame):
                 "requests. Copy the cookies again while logged in to Echo360.",
             )
             return
+        verdict = describe_jwt(cookies[AUTH_COOKIE])
+        if "expired" in verdict or "anonymous" in verdict or "truncated" in verdict:
+            # Say so now rather than after the first failed fetch.
+            if not messagebox.askyesno(
+                "That login does not look usable",
+                f"The {AUTH_COOKIE} that was pasted: {verdict}.\n\n"
+                "Echo360 will almost certainly refuse it. Sign in to Echo360, "
+                "open the unit, and copy the cookies again.\n\n"
+                "Use it anyway?",
+            ):
+                return
         self.client.set_cookies(cookies)
         self.session_var.set(f"Logged in (via {source})")
         self.status_var.set("Session ready.")

@@ -139,12 +139,20 @@ def prompt_text(state: str) -> str:
             "the app will drive instead with no download at all, or use "
             "'Paste cookies'."
         )
+    found = system_browser()
+    cost = (
+        f"Setting it up downloads a small package (a few MB) and drives the "
+        f"{'Chrome' if found == 'chrome' else 'Edge'} already on this "
+        "computer."
+        if found else
+        f"Setting it up downloads {DOWNLOAD_SIZE_HINT} and takes a few "
+        "minutes."
+    )
     return (
         "Browser login is the easy way to sign in: a browser window opens, "
         "you log in to Echo360 as usual, and the app takes it from there -- "
         "no DevTools, no copying cookies.\n\n"
-        f"Setting it up downloads {DOWNLOAD_SIZE_HINT} and takes a few "
-        "minutes. It happens once.\n\n"
+        f"{cost} It happens once.\n\n"
         "Install it now?"
     )
 
@@ -254,7 +262,8 @@ def ensure(on_status: StatusFn | None = None) -> None:
                 "playwright was installed but still cannot be imported. "
                 "Restart the app and try again."
             )
-    if not browser_installed():
+    # Only spend the download when there is no browser here to drive.
+    if not browser_installed() and not system_browser():
         install_browser(on_status)
     if describe() != READY:
         raise Echo360Error(

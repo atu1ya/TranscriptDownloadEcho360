@@ -50,6 +50,7 @@ class App(ttk.Frame):
 
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.client = Echo360Client()
+        self.client.on_cookies_changed = lambda jar: self._post("refresh", jar)
         self.lessons: list[Lesson] = []
         self.checked: set[str] = set()
         self.stop_flag = threading.Event()
@@ -230,6 +231,13 @@ class App(ttk.Frame):
             self.status_var.set(str(payload))
         elif kind == "session":
             self._apply_cookies(payload, source="browser")
+        elif kind == "refresh":
+            # Echo360 rotated a cookie mid-session; keep the fresh one so the
+            # saved session does not go stale while the app is open.
+            try:
+                session_store.save(payload, self.client.host)
+            except OSError:
+                pass
         elif kind == "lessons":
             self.lessons = payload
             self.checked = {lesson.lesson_id for lesson in payload}
@@ -313,13 +321,7 @@ class App(ttk.Frame):
     def on_browser_login(self) -> None:
         state = bootstrap.describe()
         if state == bootstrap.FROZEN:
-            messagebox.showinfo(
-                "Browser login",
-                "This standalone build cannot install browser login.\n\n"
-                "Use \"Paste cookies\" instead -- the dialog walks you "
-                "through it -- or run the app from source for one-click "
-                "login.",
-            )
+            messagebox.showinfo("Browser login", bootstrap.frozen_text())
             return
         if state != bootstrap.READY:
             if not messagebox.askyesno("One-time setup",
@@ -363,6 +365,7 @@ class App(ttk.Frame):
             text=(
                 "This copies the login you already have in your browser.\n"
                 "Nothing is typed here except what your browser prints.\n\n"
+                "Quick way:\n"
                 "1.  Click the button below to open Echo360, and sign in.\n"
                 "2.  Press F12 (macOS: Option+Command+I) to open DevTools.\n"
                 "3.  Click the \"Console\" tab.\n"
@@ -371,7 +374,15 @@ class App(ttk.Frame):
                 "     paste, type  allow pasting  first, press Enter, then\n"
                 "     paste again.\n"
                 "5.  Copy the whole line it prints out (without the quote\n"
-                "     marks is fine too) and paste it into the box below."
+                "     marks is fine too) and paste it into the box below.\n\n"
+                "If Echo360 still says the session was rejected, the console\n"
+                "did not show every cookie (some are HttpOnly). Complete way:\n"
+                "1.  In DevTools, open the \"Network\" tab and reload the page.\n"
+                "2.  Click the first request in the list (the page itself).\n"
+                "3.  Under \"Request Headers\", right-click the \"Cookie\" row\n"
+                "     and copy its value -- that one holds all of them.\n\n"
+                "Either way, copy the cookies from the same Echo360 address\n"
+                "as the unit you are downloading."
             ),
         ).grid(row=0, column=0, sticky="w")
 

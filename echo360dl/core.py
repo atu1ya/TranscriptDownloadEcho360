@@ -476,6 +476,11 @@ class Echo360Client:
         self.retries = max(1, retries)
         self.delay = delay
         self._local = threading.local()
+        self._cookie_lock = threading.Lock()
+        self._cookie_version = 1
+        # Called when Echo360 hands back a refreshed cookie, so callers can
+        # re-save the session.
+        self.on_cookies_changed: Callable[[dict[str, str]], None] | None = None
 
     # -- plumbing ---------------------------------------------------------
     @property
@@ -489,35 +494,61 @@ class Echo360Client:
                 "X-Requested-With": "XMLHttpRequest",
             })
             self._local.session = session
-        session.cookies.clear()
-        for name, value in self.cookies.items():
-            session.cookies.set(name, value)
+            self._local.cookie_version = 0
+        with self._cookie_lock:
+            version, cookies = self._cookie_version, dict(self.cookies)
+        # Only rewrite the jar when the cookies actually changed: Echo360
+        # rotates its JWT and we must keep the fresh one, not stamp the
+        # original back over it before every request.
+        if getattr(self._local, "cookie_version", 0) != version:
+            session.cookies.clear()
+            for name, value in cookies.items():
+                session.cookies.set(name, value)
+            self._local.cookie_version = version
         return session
+
+    def _absorb_cookies(self, session: requests.Session) -> None:
+        """Pick up any cookie Echo360 refreshed during the request."""
+        fresh = session.cookies.get_dict()
+        if not fresh:
+            return
+        with self._cookie_lock:
+            changed = {name: value for name, value in fresh.items()
+                       if self.cookies.get(name) != value}
+            if not changed:
+                return
+            self.cookies.update(changed)
+            self._cookie_version += 1
+            self._local.cookie_version = self._cookie_version
+            snapshot = dict(self.cookies)
+        if self.on_cookies_changed:
+            self.on_cookies_changed(snapshot)
 
     @property
     def authenticated(self) -> bool:
         return AUTH_COOKIE in self.cookies and bool(self.cookies[AUTH_COOKIE])
 
     def set_cookies(self, cookies: dict[str, str]) -> None:
-        self.cookies = dict(cookies or {})
+        with self._cookie_lock:
+            self.cookies = dict(cookies or {})
+            self._cookie_version += 1
 
     def _get(self, path: str, *, referer: str | None = None) -> requests.Response:
         url = path if path.startswith("http") else f"{self.host}{path}"
         headers = {"Referer": referer} if referer else {}
         last: Exception | None = None
         for attempt in range(self.retries):
+            session = self.session
             try:
-                response = self.session.get(url, headers=headers, timeout=self.timeout,
-                                            allow_redirects=True)
+                response = session.get(url, headers=headers, timeout=self.timeout,
+                                       allow_redirects=True)
             except requests.RequestException as exc:
                 last = exc
                 time.sleep(self.delay * (2 ** attempt))
                 continue
             if response.status_code in (401, 403) or _is_login_page(response):
-                raise AuthError(
-                    "Echo360 rejected the session (not logged in, or the cookie "
-                    "expired). Log in again."
-                )
+                raise AuthError(self._auth_error(url, response))
+            self._absorb_cookies(session)
             if response.status_code == 404:
                 raise NotFoundError(f"404 from {url}")
             if response.status_code >= 500:
@@ -529,6 +560,33 @@ class Echo360Client:
                 time.sleep(self.delay)
             return response
         raise Echo360Error(f"giving up on {url}: {last}")
+
+    def _auth_error(self, url: str, response: requests.Response) -> str:
+        """Say *why* Echo360 said no, since 'log in again' often is not it."""
+        sent = sorted(self.cookies)
+        lines = [
+            "Echo360 rejected the session "
+            f"(HTTP {response.status_code} from {url}).",
+            "",
+            "The usual causes, in order:",
+            "  * The cookies are for a different Echo360 host. This unit "
+            f"lives on {self.host} -- copy the cookies from that address.",
+            "  * The login has expired -- Echo360's cookie is short-lived. "
+            "Reload Echo360 in the browser and copy the cookies again.",
+            f"  * Only part of the cookie line was copied. {AUTH_COOKIE} "
+            "values are long; make sure nothing was cut off.",
+        ]
+        if len(sent) <= 1:
+            lines.append(
+                "  * Only one cookie came through. Some Echo360 cookies are "
+                "HttpOnly, so document.cookie cannot see them -- use the "
+                "'Copy from the Network tab' route in the paste dialog, "
+                "which captures every cookie."
+            )
+        lines += ["", f"Cookies sent: {', '.join(sent) or 'none'}"]
+        if response.url != url:
+            lines.append(f"Ended up at: {response.url}")
+        return "\n".join(lines)
 
     # -- api --------------------------------------------------------------
     def fetch_lessons(self, section_uuid: str) -> list[Lesson]:

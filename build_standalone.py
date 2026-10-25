@@ -46,12 +46,17 @@ def main() -> int:
         print("PyInstaller is not installed. Run:  pip install pyinstaller")
         return 1
 
+    # A one-file build unpacks itself into %TEMP% at launch, which is also
+    # what malware packers do: Defender flags those far more often than a
+    # plain folder, so the folder is the default and one-file is opt-in.
+    onefile = "--onefile" in sys.argv
+
     write_entry_point()
     command = [
         "pyinstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
+        "--onefile" if onefile else "--onedir",
         "--windowed",            # no console window behind the GUI
         "--name", APP_NAME,
         "--hidden-import", "tkinter",
@@ -78,12 +83,20 @@ def main() -> int:
         print(f'  "{APP_NAME}.app"  -- drag it to Applications')
         print("  First launch: right-click -> Open (it is not code-signed).")
     elif sys.platform == "win32":
-        print(f'  "{APP_NAME}.exe"  -- copy it anywhere and double-click')
+        if onefile:
+            print(f'  "{APP_NAME}.exe"  -- copy it anywhere and double-click')
+            print("  Defender flags one-file builds as a virus more often "
+                  "than not; rebuild without --onefile if it does.")
+        else:
+            print(f'  "{APP_NAME}\\{APP_NAME}.exe"  -- keep the whole folder '
+                  "together and double-click the .exe inside it")
         print("  SmartScreen may warn on first run: More info -> Run anyway.")
     else:
         print(f'  "{APP_NAME}"  -- chmod +x and run')
-    print("\nNote: browser login needs Playwright, which is NOT bundled.")
-    print("Frozen builds use the 'Paste cookies' login instead.")
+    if not _playwright_installed():
+        print("\nNote: Playwright is not installed here, so it was not "
+              "bundled and this build can only use 'Paste cookies'. "
+              "Install playwright and rebuild for browser login.")
     return 0
 
 
